@@ -517,13 +517,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Streamlit** for the amazing web framework
 - **FastAPI** for the robust API framework
 
-## 📞 Support
-
-- 📧 Email: support@infrastructure-agent.com
-- 💬 Discord: [Join our community](https://discord.gg/infra-agent)
-- 🐛 Issues: [GitHub Issues](https://github.com/your-org/infrastructure-agent/issues)
-- 📖 Docs: [Full Documentation](https://docs.infrastructure-agent.com)
-
 ---
 
 **🎉 Happy Infrastructure Provisioning!**

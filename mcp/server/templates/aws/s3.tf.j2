@@ -1,0 +1,189 @@
+# S3 Bucket
+resource "aws_s3_bucket" "{{ resource_name }}" {
+  bucket = "{{ resource_name }}-{{ environment }}-${random_id.{{ resource_name }}_suffix.hex}"
+
+  tags = {
+    Name        = "{{ resource_name }}-{{ environment }}"
+    Environment = "{{ environment }}"
+    ManagedBy   = "InfraAgent"
+  }
+}
+
+# Random suffix to ensure bucket name uniqueness
+resource "random_id" "{{ resource_name }}_suffix" {
+  byte_length = 4
+}
+
+# Bucket versioning
+resource "aws_s3_bucket_versioning" "{{ resource_name }}_versioning" {
+  bucket = aws_s3_bucket.{{ resource_name }}.id
+
+  versioning_configuration {
+    status = "{{ 'Enabled' if config.versioning | default(true) else 'Disabled' }}"
+  }
+}
+
+# Server-side encryption
+resource "aws_s3_bucket_server_side_encryption_configuration" "{{ resource_name }}_encryption" {
+  bucket = aws_s3_bucket.{{ resource_name }}.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "{{ config.encryption_algorithm | default('AES256') }}"
+      {% if config.kms_key_id %}
+      kms_master_key_id = "{{ config.kms_key_id }}"
+      {% endif %}
+    }
+    bucket_key_enabled = {{ config.bucket_key_enabled | default(true) | lower }}
+  }
+}
+
+# Public access block (security best practice)
+resource "aws_s3_bucket_public_access_block" "{{ resource_name }}_public_access" {
+  bucket = aws_s3_bucket.{{ resource_name }}.id
+
+  block_public_acls       = {{ config.block_public_acls | default(true) | lower }}
+  block_public_policy     = {{ config.block_public_policy | default(true) | lower }}
+  ignore_public_acls      = {{ config.ignore_public_acls | default(true) | lower }}
+  restrict_public_buckets = {{ config.restrict_public_buckets | default(true) | lower }}
+}
+
+{% if config.lifecycle_rules | default(true) %}
+# Lifecycle configuration
+resource "aws_s3_bucket_lifecycle_configuration" "{{ resource_name }}_lifecycle" {
+  bucket = aws_s3_bucket.{{ resource_name }}.id
+
+  rule {
+    id     = "transition-to-ia"
+    status = "Enabled"
+
+    transition {
+      days          = {{ config.transition_to_ia_days | default(30) }}
+      storage_class = "STANDARD_IA"
+    }
+
+    {% if config.enable_glacier | default(false) %}
+    transition {
+      days          = {{ config.transition_to_glacier_days | default(90) }}
+      storage_class = "GLACIER"
+    }
+    {% endif %}
+
+    {% if config.expiration_days %}
+    expiration {
+      days = {{ config.expiration_days }}
+    }
+    {% endif %}
+  }
+
+  rule {
+    id     = "delete-old-versions"
+    status = "Enabled"
+
+    noncurrent_version_expiration {
+      noncurrent_days = {{ config.noncurrent_version_expiration_days | default(90) }}
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = {{ config.abort_incomplete_multipart_days | default(7) }}
+    }
+  }
+}
+{% endif %}
+
+{% if config.enable_logging | default(false) %}
+# Logging configuration
+resource "aws_s3_bucket_logging" "{{ resource_name }}_logging" {
+  bucket = aws_s3_bucket.{{ resource_name }}.id
+
+  target_bucket = aws_s3_bucket.{{ resource_name }}_logs.id
+  target_prefix = "{{ resource_name }}-logs/"
+}
+
+# Bucket for logs
+resource "aws_s3_bucket" "{{ resource_name }}_logs" {
+  bucket = "{{ resource_name }}-logs-{{ environment }}-${random_id.{{ resource_name }}_suffix.hex}"
+
+  tags = {
+    Name        = "{{ resource_name }}-logs-{{ environment }}"
+    Environment = "{{ environment }}"
+    ManagedBy   = "InfraAgent"
+  }
+}
+{% endif %}
+
+{% if config.enable_cors | default(false) %}
+# CORS configuration
+resource "aws_s3_bucket_cors_configuration" "{{ resource_name }}_cors" {
+  bucket = aws_s3_bucket.{{ resource_name }}.id
+
+  cors_rule {
+    allowed_headers = {{ config.cors_allowed_headers | default(['*']) | tojson }}
+    allowed_methods = {{ config.cors_allowed_methods | default(['GET', 'HEAD']) | tojson }}
+    allowed_origins = {{ config.cors_allowed_origins | default(['*']) | tojson }}
+    expose_headers  = {{ config.cors_expose_headers | default(['ETag']) | tojson }}
+    max_age_seconds = {{ config.cors_max_age_seconds | default(3000) }}
+  }
+}
+{% endif %}
+
+{% if config.enable_static_website | default(false) %}
+# Static website configuration
+resource "aws_s3_bucket_website_configuration" "{{ resource_name }}_website" {
+  bucket = aws_s3_bucket.{{ resource_name }}.id
+
+  index_document {
+    suffix = "{{ config.index_document | default('index.html') }}"
+  }
+
+  error_document {
+    key = "{{ config.error_document | default('error.html') }}"
+  }
+}
+{% endif %}
+
+# Bucket policy (optional)
+{% if config.bucket_policy %}
+resource "aws_s3_bucket_policy" "{{ resource_name }}_policy" {
+  bucket = aws_s3_bucket.{{ resource_name }}.id
+
+  policy = jsonencode({{ config.bucket_policy | tojson }})
+}
+{% endif %}
+
+# Object ownership
+resource "aws_s3_bucket_ownership_controls" "{{ resource_name }}_ownership" {
+  bucket = aws_s3_bucket.{{ resource_name }}.id
+
+  rule {
+    object_ownership = "{{ config.object_ownership | default('BucketOwnerEnforced') }}"
+  }
+}
+
+# Outputs
+output "{{ resource_name }}_bucket_name" {
+  value       = aws_s3_bucket.{{ resource_name }}.id
+  description = "S3 bucket name"
+}
+
+output "{{ resource_name }}_bucket_arn" {
+  value       = aws_s3_bucket.{{ resource_name }}.arn
+  description = "S3 bucket ARN"
+}
+
+output "{{ resource_name }}_bucket_domain_name" {
+  value       = aws_s3_bucket.{{ resource_name }}.bucket_domain_name
+  description = "S3 bucket domain name"
+}
+
+{% if config.enable_static_website | default(false) %}
+output "{{ resource_name }}_website_endpoint" {
+  value       = aws_s3_bucket_website_configuration.{{ resource_name }}_website.website_endpoint
+  description = "S3 bucket website endpoint"
+}
+{% endif %}
+
+output "{{ resource_name }}_region" {
+  value       = aws_s3_bucket.{{ resource_name }}.region
+  description = "S3 bucket region"
+}

@@ -1,0 +1,164 @@
+# RDS Database Instance
+resource "aws_db_instance" "{{ resource_name }}" {
+  identifier = "{{ resource_name }}-{{ environment }}"
+
+  # Engine configuration
+  engine         = "{{ config.engine | default('mysql') }}"
+  engine_version = "{{ config.engine_version | default('8.0') }}"
+
+  # Instance configuration
+  instance_class    = "{{ config.instance_class | default('db.t3.micro') }}"
+  allocated_storage = {{ config.allocated_storage | default(20) }}
+  storage_type      = "{{ config.storage_type | default('gp3') }}"
+  storage_encrypted = {{ config.storage_encrypted | default(true) | lower }}
+
+  # Database settings
+  db_name  = "{{ config.db_name | default(resource_name | replace('-', '_')) }}"
+  username = "{{ config.username | default('admin') }}"
+  password = "{{ config.password | default('ChangeMe123!') }}"  # TODO: Use secrets manager
+
+  # Network
+  db_subnet_group_name   = aws_db_subnet_group.{{ resource_name }}_subnet_group.name
+  vpc_security_group_ids = [aws_security_group.{{ resource_name }}_sg.id]
+  publicly_accessible    = {{ config.publicly_accessible | default(false) | lower }}
+
+  # High availability
+  multi_az = {{ config.multi_az | default(false) | lower }}
+
+  # Backup configuration
+  backup_retention_period = {{ config.backup_retention_period | default(7) }}
+  backup_window          = "{{ config.backup_window | default('03:00-04:00') }}"
+  maintenance_window     = "{{ config.maintenance_window | default('mon:04:00-mon:05:00') }}"
+
+  # Monitoring
+  enabled_cloudwatch_logs_exports = {{ config.cloudwatch_logs | default(['error', 'general', 'slowquery']) | tojson }}
+  performance_insights_enabled    = {{ config.performance_insights | default(true) | lower }}
+  monitoring_interval            = {{ config.monitoring_interval | default(60) }}
+
+  # Additional settings
+  skip_final_snapshot       = {{ config.skip_final_snapshot | default(true) | lower }}
+  final_snapshot_identifier = "{{ resource_name }}-final-snapshot-${timestamp()}"
+  deletion_protection       = {{ config.deletion_protection | default(false) | lower }}
+  auto_minor_version_upgrade = {{ config.auto_minor_version_upgrade | default(true) | lower }}
+
+  tags = {
+    Name        = "{{ resource_name }}-{{ environment }}"
+    Environment = "{{ environment }}"
+    ManagedBy   = "InfraAgent"
+    Engine      = "{{ config.engine | default('mysql') }}"
+  }
+}
+
+# DB Subnet Group (for VPC)
+resource "aws_db_subnet_group" "{{ resource_name }}_subnet_group" {
+  name       = "{{ resource_name }}-subnet-group-{{ environment }}"
+  subnet_ids = [
+    aws_subnet.{{ resource_name }}_private_1.id,
+    aws_subnet.{{ resource_name }}_private_2.id
+  ]
+
+  tags = {
+    Name        = "{{ resource_name }}-subnet-group-{{ environment }}"
+    Environment = "{{ environment }}"
+    ManagedBy   = "InfraAgent"
+  }
+}
+
+# VPC for database
+resource "aws_vpc" "{{ resource_name }}_vpc" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name        = "{{ resource_name }}-vpc-{{ environment }}"
+    Environment = "{{ environment }}"
+    ManagedBy   = "InfraAgent"
+  }
+}
+
+# Private subnets (in different AZs for Multi-AZ)
+resource "aws_subnet" "{{ resource_name }}_private_1" {
+  vpc_id            = aws_vpc.{{ resource_name }}_vpc.id
+  cidr_block        = "10.0.1.0/24"
+  availability_zone = data.aws_availability_zones.available.names[0]
+
+  tags = {
+    Name        = "{{ resource_name }}-private-1-{{ environment }}"
+    Environment = "{{ environment }}"
+    ManagedBy   = "InfraAgent"
+  }
+}
+
+resource "aws_subnet" "{{ resource_name }}_private_2" {
+  vpc_id            = aws_vpc.{{ resource_name }}_vpc.id
+  cidr_block        = "10.0.2.0/24"
+  availability_zone = data.aws_availability_zones.available.names[1]
+
+  tags = {
+    Name        = "{{ resource_name }}-private-2-{{ environment }}"
+    Environment = "{{ environment }}"
+    ManagedBy   = "InfraAgent"
+  }
+}
+
+# Data source for availability zones
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+# Security group for RDS
+resource "aws_security_group" "{{ resource_name }}_sg" {
+  name        = "{{ resource_name }}-sg-{{ environment }}"
+  description = "Security group for {{ resource_name }} RDS instance"
+  vpc_id      = aws_vpc.{{ resource_name }}_vpc.id
+
+  # MySQL/PostgreSQL port
+  ingress {
+    from_port   = {{ 3306 if config.engine == 'mysql' else 5432 }}
+    to_port     = {{ 3306 if config.engine == 'mysql' else 5432 }}
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/16"]  # Allow from VPC only
+    description = "Database access from VPC"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound"
+  }
+
+  tags = {
+    Name        = "{{ resource_name }}-sg-{{ environment }}"
+    Environment = "{{ environment }}"
+    ManagedBy   = "InfraAgent"
+  }
+}
+
+# Outputs
+output "{{ resource_name }}_endpoint" {
+  value       = aws_db_instance.{{ resource_name }}.endpoint
+  description = "Database connection endpoint"
+}
+
+output "{{ resource_name }}_address" {
+  value       = aws_db_instance.{{ resource_name }}.address
+  description = "Database hostname"
+}
+
+output "{{ resource_name }}_port" {
+  value       = aws_db_instance.{{ resource_name }}.port
+  description = "Database port"
+}
+
+output "{{ resource_name }}_database_name" {
+  value       = aws_db_instance.{{ resource_name }}.db_name
+  description = "Database name"
+}
+
+output "{{ resource_name }}_arn" {
+  value       = aws_db_instance.{{ resource_name }}.arn
+  description = "Database ARN"
+}

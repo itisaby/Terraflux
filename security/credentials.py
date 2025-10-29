@@ -15,10 +15,14 @@ from database.session import get_db, SessionLocal
 # Get encryption key from environment
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 
-# Generate key if not provided (development only!)
+# Fail if encryption key is not set
 if not ENCRYPTION_KEY:
-    logging.warning("ENCRYPTION_KEY not set! Generating temporary key (NOT for production!)")
-    ENCRYPTION_KEY = Fernet.generate_key().decode()
+    raise ValueError(
+        "ENCRYPTION_KEY environment variable must be set. "
+        "Generate one with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())' "
+        "WARNING: Changing this key will make existing encrypted credentials unrecoverable! "
+        "Store this key securely in your environment configuration."
+    )
 
 # Initialize Fernet cipher
 fernet = Fernet(ENCRYPTION_KEY.encode() if isinstance(ENCRYPTION_KEY, str) else ENCRYPTION_KEY)

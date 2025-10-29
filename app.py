@@ -2,12 +2,16 @@
 Infrastructure Provisioning Agent - Main Application
 FastAPI backend with authentication, database, and agent integration
 """
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import logging
 import os
 from datetime import datetime
@@ -33,6 +37,9 @@ from security.rbac import Permission, check_permission
 from database.models import User, InfraRequest, AuditLog, CloudProvider
 from database.session import get_db, init_db
 
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Infrastructure Provisioning Agent",
@@ -42,13 +49,27 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+# Add rate limiter to app state
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Get CORS origins from environment
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",") if os.getenv("ALLOWED_ORIGINS") else []
+
+if not ALLOWED_ORIGINS:
+    if os.getenv("ENVIRONMENT") == "production":
+        raise ValueError("ALLOWED_ORIGINS must be set in production environment")
+    # Development default
+    ALLOWED_ORIGINS = ["http://localhost:8501", "http://localhost:3000", "http://127.0.0.1:8501", "http://127.0.0.1:3000"]
+    logger.warning("Using default CORS origins for development")
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Initialize agent
@@ -96,8 +117,21 @@ async def startup_event():
         # Initialize database
         init_db()
         logger.info("Database initialized")
+
+        # Verify database connectivity
+        from database.session import SessionLocal
+        from sqlalchemy import text
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+            logger.info("Database connectivity verified")
+        finally:
+            db.close()
+
     except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
+        logger.critical(f"Database initialization failed: {e}")
+        # Exit the application if database is not available
+        raise RuntimeError("Cannot start application without database connection") from e
 
 # Health check
 @app.get("/health")
@@ -111,13 +145,14 @@ async def health_check():
 
 # Authentication endpoints
 @app.post("/auth/login", response_model=LoginResponse)
-async def login(request: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")  # Max 5 login attempts per minute
+async def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)):
     """
     User login endpoint
     Returns JWT access token
     """
     try:
-        user = auth_user_db(db, request.username, request.password)
+        user = auth_user_db(db, login_data.username, login_data.password)
 
         if not user:
             raise HTTPException(
@@ -153,7 +188,9 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/auth/register")
+@limiter.limit("3/hour")  # Max 3 registrations per hour per IP
 async def register(
+    request: Request,
     username: str,
     password: str,
     email: str,

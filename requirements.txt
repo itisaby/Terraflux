@@ -20,6 +20,8 @@ httpx>=0.27.0
 pydantic>=2.6.3
 python-multipart>=0.0.9
 slowapi>=0.1.9
+email-validator>=2.1.0
+itsdangerous>=2.1.2
 
 # Cloud & Infrastructure
 boto3>=1.34.51

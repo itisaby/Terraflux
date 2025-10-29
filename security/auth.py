@@ -2,6 +2,7 @@
 Authentication and Authorization
 JWT-based authentication with password hashing
 """
+
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from jose import JWTError, jwt
@@ -28,6 +29,10 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Precomputed dummy hash for timing protection (constant-time verification)
+# This is hashed once at startup to avoid timing differences in authentication
+DUMMY_PASSWORD_HASH = pwd_context.hash("dummy_password_to_maintain_constant_timing")
 
 # HTTP Bearer token
 security = HTTPBearer()
@@ -86,6 +91,7 @@ def decode_access_token(token: str) -> Dict[str, Any]:
 def authenticate_user(db: Session, username: str, password: str) -> Optional[User]:
     """
     Authenticate a user with username and password
+    Uses constant-time comparison to prevent timing attacks
 
     Args:
         db: Database session
@@ -97,19 +103,31 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
     """
     user = db.query(User).filter(User.username == username).first()
 
+    # Always verify password even if user doesn't exist
+    # This prevents timing attacks for username enumeration
     if not user:
+        # Perform dummy verification to maintain constant timing
+        pwd_context.verify("dummy_password_to_maintain_constant_timing", DUMMY_PASSWORD_HASH)
+        logging.warning(f"Failed login attempt for non-existent user: {username}")
         return None
 
+    # Check if user is active
     if not user.is_active:
+        # Still verify password to maintain constant timing
+        verify_password(password, user.password_hash)
+        logging.warning(f"Failed login attempt for inactive user: {username}")
         return None
 
+    # Verify password
     if not verify_password(password, user.password_hash):
+        logging.warning(f"Failed login attempt with wrong password for user: {username}")
         return None
 
     # Update last login
     user.last_login = datetime.utcnow()
     db.commit()
 
+    logging.info(f"Successful login for user: {username}")
     return user
 
 def get_current_user(

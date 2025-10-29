@@ -15,7 +15,9 @@ from slowapi.errors import RateLimitExceeded
 import logging
 import os
 from datetime import datetime
-
+import re
+from email_validator import validate_email, EmailNotValidError
+ 
 # Configure logging
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -29,6 +31,7 @@ from security.auth import (
     authenticate_user, get_current_user, create_access_token,
     hash_password, authenticate_user as auth_user_db
 )
+from security.password_validator import validate_password_strength
 from security.credentials import (
     store_user_credentials, get_user_credentials,
     list_user_credentials, delete_user_credentials
@@ -63,7 +66,16 @@ if not ALLOWED_ORIGINS:
     ALLOWED_ORIGINS = ["http://localhost:8501", "http://localhost:3000", "http://127.0.0.1:8501", "http://127.0.0.1:3000"]
     logger.warning("Using default CORS origins for development")
 
-# CORS middleware
+# Import security middleware
+from security.middleware import (
+    SecurityHeadersMiddleware,
+    RequestSizeLimitMiddleware,
+    SecureErrorHandlingMiddleware,
+    AuditLoggingMiddleware
+)
+
+# Add middleware (order matters - they wrap in reverse order)
+# 1. CORS (most outer)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -71,6 +83,19 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+# 2. Security headers
+app.add_middleware(SecurityHeadersMiddleware)
+
+# 3. Request size limiting
+max_request_size = int(os.getenv("MAX_REQUEST_SIZE_MB", "10")) * 1024 * 1024
+app.add_middleware(RequestSizeLimitMiddleware, max_request_size=max_request_size)
+
+# 4. Secure error handling
+app.add_middleware(SecureErrorHandlingMiddleware)
+
+# 5. Audit logging (most inner - logs actual requests)
+app.add_middleware(AuditLoggingMiddleware)
 
 # Initialize agent
 infra_agent = InfraAgent()
@@ -197,8 +222,27 @@ async def register(
     full_name: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Register new user"""
+    """Register new user with password strength and email validation"""
     try:
+        # Validate username format
+        if not re.match(r'^[a-zA-Z0-9_-]{3,30}$', username):
+            raise HTTPException(
+                status_code=400,
+                detail="Username must be 3-30 characters and contain only letters, numbers, underscores, and hyphens"
+            )
+
+        # Validate email format
+        try:
+            validated_email = validate_email(email, check_deliverability=False)
+            email = validated_email.normalized
+        except EmailNotValidError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid email address: {str(e)}") from e
+
+        # Validate password strength
+        is_valid, error_message = validate_password_strength(password, username)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_message)
+
         # Check if username exists
         existing_user = db.query(User).filter(User.username == username).first()
         if existing_user:
